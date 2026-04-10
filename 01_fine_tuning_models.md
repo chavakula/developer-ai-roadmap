@@ -345,7 +345,7 @@ args = TrainingArguments(
 
 trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
+    processing_class=tokenizer,   # `tokenizer=` is deprecated in TRL v0.9+; use processing_class
     train_dataset=dataset["train"],
     eval_dataset=dataset["validation"],
     args=args
@@ -361,6 +361,116 @@ tokenizer.save_pretrained("orbitmart-invoice-lora")
 - hyperparameter sensitivity
 - evaluation on valid JSON and numeric correctness
 - cost/quality tradeoffs
+
+---
+
+## Tutorial 2b — QLoRA: fine-tuning large models on consumer hardware
+
+### Why QLoRA matters
+LoRA alone still requires loading full-precision model weights.  
+For a 7B model that is around 14 GB in bf16 — difficult on a single consumer GPU.
+
+**QLoRA** (Quantized LoRA) loads the base model in **4-bit NF4 quantization**, which cuts memory roughly 4×.  
+You then attach LoRA adapters in higher precision (bf16) on top.  
+This means a 7B model can be fine-tuned on a 16 GB GPU.
+
+### What you need
+```bash
+pip install bitsandbytes accelerate peft trl transformers
+```
+
+### Example: QLoRA invoice extractor (consumer GPU)
+
+```python
+import torch
+from datasets import load_dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    TrainingArguments,
+)
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from trl import SFTTrainer
+
+base_model = "REPLACE_WITH_YOUR_INSTRUCT_MODEL"
+
+# 4-bit quantization config
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",         # NF4 is the recommended QLoRA quant type
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_use_double_quant=True,    # double quantization saves another ~0.4 bits/param
+)
+
+tokenizer = AutoTokenizer.from_pretrained(base_model)
+model = AutoModelForCausalLM.from_pretrained(
+    base_model,
+    quantization_config=bnb_config,
+    device_map="auto",
+)
+
+# Required step before attaching LoRA adapters to a quantized model
+model = prepare_model_for_kbit_training(model)
+
+peft_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.05,
+    target_modules="all-linear",
+    task_type="CAUSAL_LM",
+)
+model = get_peft_model(model, peft_config)
+model.print_trainable_parameters()
+# typical output: trainable params: 6M || all params: 3.7B || trainable%: 0.16
+
+dataset = load_dataset("json", data_files={"train": "train.jsonl", "validation": "val.jsonl"})
+
+args = TrainingArguments(
+    output_dir="orbitmart-invoice-qlora",
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=8,
+    num_train_epochs=3,
+    learning_rate=2e-4,
+    logging_steps=10,
+    eval_strategy="steps",
+    eval_steps=50,
+    save_steps=50,
+    bf16=True,
+    report_to="none",
+)
+
+trainer = SFTTrainer(
+    model=model,
+    processing_class=tokenizer,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["validation"],
+    args=args,
+)
+
+trainer.train()
+model.save_pretrained("orbitmart-invoice-qlora")
+tokenizer.save_pretrained("orbitmart-invoice-qlora")
+```
+
+### Key differences from plain LoRA
+| Aspect | LoRA | QLoRA |
+|---|---|---|
+| Base model precision | bf16 / fp16 | 4-bit NF4 |
+| Memory saving | moderate | high (3–4×) |
+| `prepare_model_for_kbit_training` | not needed | required |
+| GPU requirement (7B model) | ~14 GB | ~6–8 GB |
+| Quality cost | none | small and often negligible |
+
+### When to use QLoRA
+- 7B–13B models on a single 16 GB GPU or smaller
+- rapid iteration with low hardware budget
+- when memory is the bottleneck, not quality
+
+### When plain LoRA is enough
+- models already fit in memory
+- you want simpler dependency stack (no `bitsandbytes`)
+- running on hardware where 4-bit ops are not supported
 
 ---
 

@@ -371,6 +371,40 @@ def main():
 - be careful with random seeds
 - logging from every process can become noisy
 
+### Using DistributedSampler correctly
+
+Without `DistributedSampler`, every process would iterate over the **entire** dataset.  
+With it, each process sees only its assigned shard.
+
+```python
+from torch.utils.data import DataLoader, DistributedSampler
+
+# In your training script, after DDP setup:
+train_sampler = DistributedSampler(
+    train_dataset,
+    num_replicas=dist.get_world_size(),
+    rank=dist.get_rank(),
+    shuffle=True,
+    seed=42,
+)
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=per_gpu_batch_size,
+    sampler=train_sampler,   # replaces shuffle=True
+    num_workers=4,
+    pin_memory=True,
+)
+
+# Important: call set_epoch each epoch so shuffling is different per epoch
+for epoch in range(num_epochs):
+    train_sampler.set_epoch(epoch)   # ensures non-repeating order across epochs
+    train_one_epoch(model, train_loader, optimizer, criterion, device)
+```
+
+> `set_epoch()` is critical.  
+> Without it every epoch sees the same data order on every GPU, reducing effective randomness.
+
 ---
 
 ## Tutorial 4 — FSDP vs DeepSpeed
@@ -437,6 +471,45 @@ Common choices:
 Benefits:
 - faster training
 - lower memory use
+
+### bf16 vs fp16: which to choose
+
+Both use 16 bits, but the bit layout differs:
+
+| Property | bf16 | fp16 |
+|---|---|---|
+| Exponent bits | 8 (same as fp32) | 5 |
+| Mantissa bits | 7 | 10 |
+| Max representable value | ~3.4 × 10³⁸ | 65504 |
+| Overflow risk | very low | moderate |
+| Precision | lower | higher |
+| Requires loss scaling | rarely | often |
+| Supported hardware | A100, H100, modern Ampere+ | all CUDA GPUs |
+
+**Practical rule:** use `bf16` when your hardware supports it (Ampere generation or newer).  
+`fp16` is fine on older hardware but you may need `fp16_opt_level` loss scaling to avoid NaN gradients.
+
+If you see NaN losses with fp16, switch to bf16 or add gradient scaling:
+
+```python
+from torch.cuda.amp import GradScaler, autocast
+
+scaler = GradScaler()   # fp16 loss scaler
+
+for batch in train_loader:
+    optimizer.zero_grad()
+    with autocast(dtype=torch.float16):
+        logits = model(batch["input_ids"].to(device))
+        loss = criterion(logits, batch["label"].to(device))
+
+    scaler.scale(loss).backward()
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    scaler.step(optimizer)
+    scaler.update()
+```
+
+> With bf16 and `autocast(dtype=torch.bfloat16)`, you usually do not need a `GradScaler` at all.
 
 ### Low precision / FP8 ecosystem
 The current stack now includes stronger support for lower precision training paths, but do not start there as a beginner.  

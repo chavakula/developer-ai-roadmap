@@ -185,6 +185,40 @@ Always split data before training.
 Looking at test performance repeatedly while tuning.  
 That quietly turns the test set into part of training.
 
+### Code: split your CSV into train / val / test
+
+```python
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+df = pd.read_csv("data/tickets.csv")   # columns: text, label
+
+# First split: train vs temp (val + test)
+train_df, temp_df = train_test_split(
+    df,
+    test_size=0.30,
+    random_state=42,
+    stratify=df["label"]   # keeps class proportions equal in each split
+)
+
+# Second split: val vs test
+val_df, test_df = train_test_split(
+    temp_df,
+    test_size=0.50,
+    random_state=42,
+    stratify=temp_df["label"]
+)
+
+print(f"train={len(train_df)}  val={len(val_df)}  test={len(test_df)}")
+
+train_df.to_csv("data/splits/train.csv", index=False)
+val_df.to_csv("data/splits/val.csv", index=False)
+test_df.to_csv("data/splits/test.csv", index=False)
+```
+
+> `stratify=df["label"]` ensures each label appears proportionally in every split.  
+> This is important for rare classes like `billing_issue`.
+
 ---
 
 ## Step 2 — Build a minimal tokenizer

@@ -106,11 +106,16 @@ Decide how to handle:
 
 ## Hugging Face custom tokenizer training pattern
 
+`train_new_from_iterator` is available on **fast tokenizers** only (backed by the `tokenizers` Rust library).
+`GemmaTokenizer` is SentencePiece-based and is **not** a fast tokenizer, so it does not expose this method.
+Use any fast tokenizer as an architecture template — `gpt2` is a good, dependency-free choice for BPE.
+
 ```python
 from datasets import load_dataset
-from transformers import GemmaTokenizer
+from transformers import AutoTokenizer
 
-tokenizer = GemmaTokenizer()
+# gpt2 is a BPE-based fast tokenizer — safe to use as the architecture template
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
 dataset = load_dataset("text", data_files={"train": "orbitmart_corpus.txt"})["train"]
 
 def batch_iterator(batch_size=1000):
@@ -124,6 +129,35 @@ trained_tokenizer = tokenizer.train_new_from_iterator(
 
 trained_tokenizer.save_pretrained("./orbitmart-tokenizer")
 ```
+
+### Alternative: using the `tokenizers` library directly
+For full control over normalization, pre-tokenization, and merges, build from scratch:
+
+```python
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers
+from datasets import load_dataset
+
+tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
+tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+
+trainer = trainers.BpeTrainer(
+    special_tokens=["<pad>", "<unk>", "<bos>", "<eos>"],
+    vocab_size=32000,
+    min_frequency=2,
+)
+
+dataset = load_dataset("text", data_files={"train": "orbitmart_corpus.txt"})["train"]
+
+def batch_iterator(batch_size=1000):
+    for i in range(0, len(dataset), batch_size):
+        yield dataset[i:i+batch_size]["text"]
+
+tokenizer.train_from_iterator(batch_iterator(), trainer=trainer)
+tokenizer.save("./orbitmart-tokenizer/tokenizer.json")
+```
+
+> Use the first pattern when you want a drop-in compatible Hugging Face tokenizer.  
+> Use the second when you want explicit control over every tokenization decision.
 
 ### Corpus suggestions
 Train on:
@@ -237,8 +271,59 @@ class OrbitTinyLM(PreTrainedModel):
 ```
 
 ### Important note
-This is educational, not a production transformer.  
-Its purpose is to teach the packaging interface.
+This skeleton is **intentionally incomplete**: it has embedding and an LM head but **no transformer blocks**.  
+Its purpose is to teach the packaging interface, not to produce a working LLM.
+
+### Adding real transformer blocks
+
+Replace the gap between embeddings and the LM head with stacked `TransformerDecoderLayer` blocks:
+
+```python
+import torch.nn as nn
+from transformers import PreTrainedModel
+
+class OrbitTinyLMWithBlocks(PreTrainedModel):
+    config_class = OrbitConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.token_emb = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.pos_emb = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=config.hidden_size,
+            nhead=config.num_attention_heads,
+            dim_feedforward=config.intermediate_size,
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=config.num_hidden_layers)
+
+        # Causal mask: each position can only attend to itself and earlier positions
+        self.register_buffer(
+            "causal_mask",
+            nn.Transformer.generate_square_subsequent_mask(config.max_position_embeddings),
+            persistent=False,
+        )
+
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
+        self.post_init()
+
+    def forward(self, input_ids):
+        batch_size, seq_len = input_ids.shape
+        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+
+        x = self.token_emb(input_ids) + self.pos_emb(positions)
+
+        # Decoder in self-attention-only mode: memory == x (standard for decoder-only LMs)
+        mask = self.causal_mask[:seq_len, :seq_len]
+        x = self.decoder(tgt=x, memory=x, tgt_mask=mask, memory_mask=mask)
+
+        logits = self.lm_head(x)
+        return {"logits": logits}
+```
+
+> For production-quality implementations, look at the Hugging Face transformers source for GPT-2 or Llama.  
+> These show the full attention, RoPE, normalization, and weight-tying details.
 
 ---
 

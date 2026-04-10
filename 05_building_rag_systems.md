@@ -326,6 +326,58 @@ A practical RAG eval commonly checks:
 - answer accuracy/correctness
 - retrieval quality
 
+### Dedicated RAG evaluation frameworks
+
+Beyond hand-rolled metrics, purpose-built frameworks accelerate eval setup:
+
+| Framework | Strengths | When to use |
+|---|---|---|
+| **RAGAS** | retrieval + generation metrics out of the box (faithfulness, context recall, precision, answer relevance) | quick end-to-end quality score; LangChain/LlamaIndex-friendly |
+| **TrueLens** | TruEra's RAG triad (context relevance, groundedness, answer relevance); integrates with multiple frameworks | when you want human-readable scorecards |
+| **DeepEval** | unit-test style assertions; supports LLM-as-judge and custom metrics | CI/CD pipelines; regression testing |
+| **LangSmith evals** | trace-native; easy to annotate runs and build datasets from production traffic | teams already using LangChain/LangGraph |
+
+#### RAGAS quick start
+
+```bash
+pip install ragas
+```
+
+```python
+from ragas import evaluate
+from ragas.metrics import (
+    faithfulness,
+    answer_relevancy,
+    context_recall,
+    context_precision,
+)
+from datasets import Dataset
+
+# Build a dataset from your eval set
+eval_data = {
+    "question": ["Can opened earbuds be returned within 30 days?"],
+    "answer":   ["Yes, opened earbuds may be returned within 30 days if the hygiene seal is intact."],
+    "contexts": [["Return Policy section 3: Opened items may be returned within 30 days if hygiene seal is intact."]],
+    "ground_truth": ["Opened earbuds may be returned within 30 days if hygiene seal is intact."],
+}
+
+dataset = Dataset.from_dict(eval_data)
+
+result = evaluate(
+    dataset,
+    metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
+)
+print(result)
+```
+
+#### What each metric means (RAGAS)
+- **faithfulness** — is the answer supported by retrieved context? (detects hallucinations)
+- **answer_relevancy** — does the answer address the question? (detects off-topic replies)
+- **context_recall** — did retrieval surface evidence needed for the ground truth?
+- **context_precision** — are retrieved passages actually relevant? (penalizes noisy top-k)
+
+> Start with `faithfulness` and `context_recall` — they catch the two most common RAG failure modes.
+
 ---
 
 ## Tutorial 8 — Observability and regression testing

@@ -138,6 +138,50 @@ Store metadata like:
 
 That makes filtering possible later.
 
+### Code: create a vector store and upload files
+
+```python
+import os
+from pathlib import Path
+from openai import OpenAI
+
+client = OpenAI()
+
+# Step 1: create the vector store
+vector_store = client.vector_stores.create(
+    name="OrbitMart Knowledge Base"
+)
+print("vector_store_id:", vector_store.id)
+
+# Step 2: upload files with metadata
+file_paths = [
+    "docs/returns_policy.pdf",
+    "docs/warranty_guide.md",
+    "docs/accessory_compatibility.md",
+]
+
+file_streams = [open(p, "rb") for p in file_paths]
+
+batch = client.vector_stores.file_batches.upload_and_poll(
+    vector_store_id=vector_store.id,
+    files=file_streams,
+)
+
+print("status:", batch.status)
+print("file_counts:", batch.file_counts)
+
+for stream in file_streams:
+    stream.close()
+```
+
+> The `upload_and_poll` helper uploads all files and waits until indexing is complete.  
+> For large corpora, use the async variant and poll `file_batches.retrieve()` on a schedule.
+
+### Attaching metadata per file
+
+The platform attaches metadata when you set file attributes after uploading.  
+If you need category/version filters, include those in the file name or store them in a sidecar mapping, and apply filters at query time using the `filters` parameter (shown in Step 2).
+
 ---
 
 ## Step 2 — Query with file search

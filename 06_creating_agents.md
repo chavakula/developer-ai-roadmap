@@ -5,6 +5,79 @@
 
 ---
 
+## Plain English: what this chapter is about
+
+A chatbot **answers**. An agent **does**.
+
+```text
+PLAIN CHATBOT                          AGENT
+┌───────────────────────────┐          ┌─────────────────────────────────────┐
+│ user: "where is order 42?"│          │ user: "where is order 42?"          │
+│                           │          │     ↓                               │
+│ model: "I cannot look     │          │ model decides: I should call        │
+│         up orders. Please │          │   get_order_status(order_id=42)     │
+│         contact support." │          │     ↓                               │
+└───────────────────────────┘          │ tool runs → returns                 │
+   one turn,                           │   {"status":"shipped",              │
+   no actions,                         │    "eta":"2026-04-12"}              │
+   no real-world effect.               │     ↓                               │
+                                       │ model: "Your order shipped on       │
+                                       │  Apr 10 and arrives Apr 12."        │
+                                       └─────────────────────────────────────┘
+                                          multi-step, calls tools,
+                                          can take real-world actions.
+```
+
+The recipe for an agent:
+
+```text
+   ┌────────────────────────────────────────────────────────┐
+   │                  AGENT LOOP                            │
+   │                                                        │
+   │   user msg ──▶ model + instructions + tool list        │
+   │                          │                             │
+   │                          ▼                             │
+   │              decide: answer OR call a tool             │
+   │                          │                             │
+   │             ┌────────────┴────────────┐                │
+   │             ▼                         ▼                │
+   │       call tool                 final answer ──▶ user  │
+   │             │                                          │
+   │             ▼                                          │
+   │       tool result ──▶ feed back into model             │
+   │             │                                          │
+   │             └─────────── loop ◀────────────────┐       │
+   │                                                │       │
+   │   (optional: human approval before risky tool) ┘       │
+   └────────────────────────────────────────────────────────┘
+```
+
+Start with **one** agent, **a few** tools, and **clear approval points**. That solves more real problems than people expect.
+
+---
+
+## Mini-glossary: jargon in this chapter
+
+| Term | One-line meaning |
+|---|---|
+| Agent | A model + instructions + tools + a loop that can take multi-step actions. |
+| Tool / function | A typed function the model can call (e.g. `get_order_status`). |
+| Function-calling | The model returning a structured request to invoke a tool. |
+| Tool schema | The JSON description of a tool's name, args, and types. |
+| Session / state | Memory of the current conversation/run (messages, tool results). |
+| Loop | The cycle: model → tool → result → model → ... until done. |
+| Handoff | Passing the conversation from one agent to a specialist agent. |
+| Multi-agent | A team of agents (router + specialists), each with focused tools. |
+| Guardrail | A check that blocks unsafe inputs/outputs (PII, policy, scope). |
+| Approval gate | A human "yes/no" required before a risky tool runs. |
+| Trace | A logged record of one agent run (every step + tool call). |
+| Eval | Scored test cases for the agent (did it pick the right tool? right answer?). |
+| MCP | Model Context Protocol — a standard way to expose tools/data to any agent. |
+| System prompt / instructions | The fixed text describing the agent's role and rules. |
+| Tool-use loop limit | Max steps before forcing the agent to stop (prevents runaway loops). |
+
+---
+
 ## What an agent is
 
 An agent is more than a single completion.
@@ -350,6 +423,36 @@ Handoffs let one agent delegate to another specialized agent.
 
 ### Concept
 A handoff behaves like a tool that transfers control.
+
+### Visual: single-agent vs multi-agent with handoffs
+
+```text
+SINGLE AGENT (start here)              MULTI-AGENT WITH HANDOFFS
+┌────────────────────────────┐         ┌──────────────────────────────────────┐
+│         user               │         │              user                    │
+│           │                │         │                │                     │
+│           ▼                │         │                ▼                     │
+│   ┌────────────────┐       │         │       ┌────────────────┐             │
+│   │  one agent     │       │         │       │ triage agent   │             │
+│   │  many tools:   │       │         │       │ (router only)  │             │
+│   │  - get_order   │       │         │       └───┬────────┬───┘             │
+│   │  - get_policy  │       │         │           │        │                 │
+│   │  - issue_refund│       │         │     handoff      handoff             │
+│   └────────────────┘       │         │           ▼        ▼                 │
+│                            │         │   ┌────────────┐ ┌────────────┐      │
+│  good for: 80% of cases    │         │   │ refund     │ │ finance    │      │
+│  one prompt, one loop      │         │   │ agent      │ │ agent      │      │
+└────────────────────────────┘         │   │ (issue_    │ │ (update_   │      │
+                                       │   │  refund)   │ │  payment)  │      │
+                                       │   └────────────┘ └────────────┘      │
+                                       │                                      │
+                                       │  good when: distinct domains,        │
+                                       │  different tool sets, different      │
+                                       │  approval rules per specialist       │
+                                       └──────────────────────────────────────┘
+```
+
+Rule of thumb: do **not** start multi-agent. Move to it only when one agent's prompt + tools become unwieldy or when specialist agents need different guardrails / approval rules.
 
 ### Example scenario
 User asks:

@@ -5,6 +5,53 @@
 
 ---
 
+## Plain English: what this chapter is about
+
+Imagine you hired a brilliant new employee.  
+They know everything about the world, but they do **not** know:
+- your company's tone of voice
+- your refund policies
+- how your invoices are formatted
+- what "approved" looks like for your team
+
+You don't re-teach them English from scratch. You give them a few hundred good examples of how things should be done at your company, and they adapt.
+
+**That is fine-tuning.**
+
+You take an already-smart model (GPT-5, Llama, Mistral) and continue training it on a small amount of YOUR data so it behaves the way YOU want.
+
+```text
+┌────────────────────┐    a few hundred    ┌──────────────────────┐
+│  Pretrained model  │────  good examples──►│  Your specialized    │
+│  (knows language)  │    of YOUR data      │  model (knows your   │
+└────────────────────┘                      │  tone & rules)       │
+                                            └──────────────────────┘
+```
+
+---
+
+## Mini-glossary for this chapter
+
+Don't worry if these feel cryptic — every term is explained in detail below.
+
+| Term | One-line meaning |
+|---|---|
+| **Pretrained model** | A model someone already trained on huge text — your starting point |
+| **Fine-tuning** | Continuing training on YOUR data to teach behavior or style |
+| **SFT** (Supervised Fine-Tuning) | "Here is input → here is the right output." Show examples; model copies |
+| **DPO** (Direct Preference Optimization) | "Answer A is better than answer B." Model learns preferences from pairs |
+| **RFT** (Reinforcement Fine-Tuning) | "Here's a way to score answers." Model learns by maximizing the score |
+| **PEFT** (Parameter-Efficient Fine-Tuning) | Tune only a small fraction of weights instead of all of them |
+| **LoRA** (Low-Rank Adaptation) | The most popular PEFT method — adds tiny adapter layers, freezes the rest |
+| **QLoRA** | LoRA + 4-bit quantization. Lets you fine-tune big models on small GPUs |
+| **Adapter** | A small set of new weights trained on top of a frozen base model |
+| **Grader** | A function that scores model answers (used in RFT) |
+| **Reward hacking** | When the model exploits the grader instead of solving the real task |
+| **Hosted vs open** | Hosted = OpenAI/Anthropic do training for you. Open = you run it yourself |
+| **Eval** | A test set + metric for measuring whether your model improved |
+
+---
+
 ## What fine-tuning is
 
 Fine-tuning means taking a pretrained model and **adapting** it to your task or behavior requirements.
@@ -15,6 +62,29 @@ Examples:
 - align responses to preferences
 - improve multi-step reasoning on a narrow task
 - reduce cost by pushing good behavior into a smaller model
+
+### Concrete before/after example
+
+**Before fine-tuning** (generic GPT model):
+
+```text
+Customer: My charger arrived broken.
+Model:    I am sorry to hear about your inconvenience. As an AI language model,
+          I cannot directly help with hardware issues, but you may want to
+          contact customer support, check your warranty, or consider purchasing
+          a replacement from the original retailer where you bought the product.
+```
+
+**After fine-tuning** on OrbitMart support replies:
+
+```text
+Customer: My charger arrived broken.
+Model:    I'm sorry the charger arrived damaged. To start a replacement,
+          please share your order number and a photo of the charger.
+          I'll have a new unit shipped within 2 business days.
+```
+
+Same input. Different model. The fine-tuned version learned **your tone, your policy, your structure**.
 
 ---
 
@@ -29,6 +99,41 @@ This question alone saves teams a huge amount of wasted effort.
 ---
 
 ## Decision framework: prompt vs RAG vs SFT vs DPO vs RFT
+
+### Visual: which approach fits which problem
+
+```text
+                              ┌──────────────────────────┐
+                              │  What kind of problem?    │
+                              └────────────┬─────────────┘
+                                           │
+        ┌───────────────────┬──────────────┼──────────────┬──────────────────┐
+        │                   │              │              │                  │
+        ▼                   ▼              ▼              ▼                  ▼
+   ┌─────────┐        ┌─────────┐     ┌─────────┐    ┌─────────┐       ┌─────────┐
+   │ Better  │        │ Private │     │ Style / │    │ Pick    │       │ Score-  │
+   │ instr-  │        │ or      │     │ format  │    │ best of │       │ able    │
+   │ uctions │        │ fresh   │     │ matters │    │ multi-  │       │ outcome │
+   │         │        │ data    │     │         │    │ ple     │       │         │
+   └────┬────┘        └────┬────┘     └────┬────┘    └────┬────┘       └────┬────┘
+        │                  │                │              │                 │
+        ▼                  ▼                ▼              ▼                 ▼
+   PROMPTING            RAG               SFT            DPO               RFT
+   (free, fast)    (no retraining)  (show examples)  (preference     (reward
+                                                       pairs)         function)
+```
+
+### Quick definitions in one paragraph each
+
+**SFT (Supervised Fine-Tuning):** You show the model thousands of `(input, ideal_output)` pairs. The model learns to imitate. *Use when you can write/collect "perfect" answers.*
+
+**DPO (Direct Preference Optimization):** You show pairs of answers — one "chosen", one "rejected". The model learns to prefer the chosen style. *Use when "good" is hard to define but you can compare two answers.*
+
+**RFT (Reinforcement Fine-Tuning):** You provide a function (a *grader*) that scores any answer. The model learns to maximize the score. *Use when correctness is checkable (SQL runs, JSON validates, math checks out).*
+
+**LoRA / QLoRA:** Techniques that make any of the above cheaper by training only a tiny number of new "adapter" weights instead of the whole model.
+
+### Comparison table
 
 | Need | Best first move | Why |
 |---|---|---|
@@ -267,6 +372,31 @@ The finance team wants structured output:
 ## Why PEFT/LoRA is the default open-model entry point
 
 LoRA updates only small trainable adapter matrices instead of the whole model.
+
+### Visual: full fine-tuning vs LoRA
+
+```text
+FULL FINE-TUNING:
+  ┌──────────────────────────────────────────┐
+  │       Pretrained model (7B params)        │
+  │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │  ← train ALL 7 billion
+  │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │     (huge GPU + storage)
+  │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │
+  └──────────────────────────────────────────┘
+
+LORA:
+  ┌──────────────────────────────────────────┐
+  │       Pretrained model (7B params)        │
+  │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │  ← FROZEN (not trained)
+  │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
+  │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
+  └──────────────────────────────────────────┘
+                      +
+            ┌─────────────────────┐
+            │  LoRA adapters      │  ← train only ~10M params
+            │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │     (fits on consumer GPU)
+            └─────────────────────┘
+```
 
 That means:
 - less memory

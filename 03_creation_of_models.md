@@ -5,22 +5,52 @@
 
 ---
 
-## What “creation of models” really means
+## Plain English: what this chapter is about
 
-In practice, creating a model is not only “inventing a new architecture.”
+So far you have **used** models that someone else built. This chapter is about **building your own model package**.
 
-It often means creating a complete artifact stack:
+Helpful analogy: shipping a model is like shipping a mobile app, not just the binary. An app needs an icon, a settings screen, install instructions, a version, and screenshots. A model package needs a tokenizer, a config, weights, a class that knows how to load them, and a model card telling people how to use it.
 
-- tokenizer
-- config
-- architecture
-- task heads
-- checkpoint format
-- packaging
-- model card
-- inference interface
+```text
+JUST WEIGHTS  (not enough)              A REAL MODEL PACKAGE  (what we ship)
+┌──────────────┐                        ┌────────────────────────────────┐
+│ pytorch_model│                        │  tokenizer/   ← splits text   │
+│   .bin       │                        │  config.json  ← architecture  │
+└──────────────┘                        │  model.safetensors ← weights  │
+   "What is this?                       │  modeling_*.py ← class code   │
+    How do I run it?"                   │  README.md     ← model card   │
+                                        │  generation_config.json       │
+                                        └────────────────────────────────┘
+                                              loaded with one line:
+                                              AutoModel.from_pretrained(...)
+```
 
 A usable model is a **package**, not just a weight file.
+
+---
+
+## Mini-glossary: jargon in this chapter
+
+| Term | One-line meaning |
+|---|---|
+| Tokenizer | Splits text into IDs the model can read. |
+| Vocabulary | The fixed list of tokens the tokenizer knows. |
+| BPE / WordPiece / Unigram | Three ways tokenizers learn how to split words. |
+| Special token | Reserved IDs like `[CLS]`, `[PAD]`, `<eos>` with a defined role. |
+| Config | A small JSON describing model shape (layers, hidden size, vocab size, etc.). |
+| Architecture | The class of layers (e.g. transformer decoder) the weights plug into. |
+| Task head | A small layer on top that turns hidden states into the answer (class, span, token). |
+| Checkpoint | A saved snapshot of weights (and sometimes optimizer state). |
+| `save_pretrained` / `from_pretrained` | Hugging Face convention to save and reload a full package. |
+| Model card | A README describing what the model is, how it was trained, and how to use it safely. |
+| Hidden size (d_model) | Width of each token's vector inside the model. |
+| Num layers / depth | How many transformer blocks are stacked. |
+| Context length | Max tokens the model can read at once. |
+| Embedding | The lookup table that turns a token ID into a vector. |
+| Tying weights | Reusing the embedding matrix as the output projection (saves params). |
+| safetensors | A safer, faster file format for weights than `.bin`. |
+
+Read this table once and refer back as terms appear.
 
 ---
 

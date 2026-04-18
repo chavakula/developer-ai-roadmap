@@ -5,20 +5,56 @@
 
 ---
 
-## What RAG is
+## Plain English: what this chapter is about
 
-RAG stands for **Retrieval-Augmented Generation**.
+A pretrained LLM only knows what it saw during training. It does not know your company's return policy, last week's price list, or the manual for the product you launched yesterday.
 
-The basic idea is simple:
+**RAG = give the model an open book at answer time.**
 
 ```text
-user question
- -> retrieve relevant external context
- -> give context to the model
- -> generate grounded answer
+CLOSED-BOOK EXAM (no RAG)              OPEN-BOOK EXAM (RAG)
+┌──────────────────────────┐           ┌──────────────────────────┐
+│  Question: "What is      │           │  Question: "What is      │
+│  OrbitMart's return      │           │  OrbitMart's return      │
+│  window for laptops?"    │           │  window for laptops?"    │
+│                          │           │                          │
+│        ↓                 │           │  Step 1: search policy   │
+│   model guesses          │           │   docs → finds:          │
+│   from memory            │           │   "Laptops: 14 days"     │
+│                          │           │                          │
+│   "Probably 30 days?"    │           │  Step 2: model reads     │
+│   ❌ might be wrong      │           │   passage + answers:     │
+│   ❌ no citation         │           │   "14 days [policy.pdf]" │
+└──────────────────────────┘           │   ✅ correct + cited     │
+                                       └──────────────────────────┘
 ```
 
-Instead of hoping the model memorized the answer during pretraining, you fetch the answer source at runtime.
+RAG = **Retrieval-Augmented Generation**: retrieve relevant text → put it in the prompt → let the model write an answer that is grounded in that text.
+
+---
+
+## Mini-glossary: jargon in this chapter
+
+| Term | One-line meaning |
+|---|---|
+| Chunk | A small piece of a document (a paragraph or two) used as a retrieval unit. |
+| Embedding | A vector that represents the meaning of a chunk so similar meanings are nearby. |
+| Vector store | A database that stores embeddings and lets you search by similarity. |
+| Index | The data structure inside the vector store that makes search fast. |
+| Top-k | How many chunks to retrieve per query (e.g. top-5). |
+| Semantic search | Search by meaning (using embeddings). |
+| Lexical / BM25 search | Search by keyword overlap (classic IR). |
+| Hybrid retrieval | Combine semantic + lexical for better recall. |
+| Reranker | A second model that re-orders the top-k for higher precision. |
+| Grounding | The retrieved text the model is required to base its answer on. |
+| Citation | The source pointer the model returns alongside the answer. |
+| Hallucination | The model inventing facts not in the retrieved text. |
+| Context window | Max tokens the model can read at once (limits how many chunks fit). |
+| Recall@k | Fraction of queries where the right chunk is in the top-k. |
+| MRR | Mean reciprocal rank of the right chunk in the result list. |
+| Faithfulness | Whether the answer is actually supported by the cited chunks. |
+
+Read once, refer back as terms appear.
 
 ---
 
@@ -73,6 +109,56 @@ documents
  -> response synthesis
  -> citations / grounded answer
 ```
+
+### Visual: same pipeline, with a real example
+
+```text
+1. INGEST (done once, ahead of time)
+   ┌──────────────────────────────────────────────────────┐
+   │ policy.pdf  "Laptops can be returned within 14 days  │
+   │              of delivery in original packaging..."   │
+   └──────────────────────────────────────────────────────┘
+                          │
+                          ▼  chunk into ~300-token pieces
+   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+   │ chunk 1  │ │ chunk 2  │ │ chunk 3  │ │ chunk 4  │
+   │ "Returns"│ │"Laptops: │ │ "Phones: │ │ "RMA..." │
+   │          │ │  14 days"│ │  7 days" │ │          │
+   └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+        │            │            │            │
+        ▼            ▼            ▼            ▼  embed each chunk
+       [v1]         [v2]         [v3]         [v4]
+        │            │            │            │
+        └────────────┴─────┬──────┴────────────┘
+                           ▼
+                   ┌───────────────┐
+                   │ vector store  │  (stores vectors + chunk text + metadata)
+                   └───────────────┘
+
+2. ANSWER (every time a user asks)
+   user: "How long do I have to return my laptop?"
+            │
+            ▼ embed the question
+          [vq]
+            │
+            ▼  similarity search → top-3 chunks
+   ┌──────────┐ ┌──────────┐ ┌──────────┐
+   │ chunk 2  │ │ chunk 1  │ │ chunk 4  │   ← ranked
+   │"14 days" │ │"Returns" │ │ "RMA..." │
+   └────┬─────┘ └────┬─────┘ └────┬─────┘
+        └────────────┼────────────┘
+                     ▼
+        prompt = system + question + retrieved chunks
+                     │
+                     ▼
+                ┌──────────┐
+                │   LLM    │
+                └────┬─────┘
+                     ▼
+        "You have 14 days from delivery. [policy.pdf, p.2]"
+```
+
+This is the entire mental model. Everything else in the chapter is **how to make each box reliable**.
 
 ---
 

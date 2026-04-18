@@ -5,24 +5,50 @@
 
 ---
 
-## Empowering with RAG vs building RAG
+## Plain English: what this chapter is about
 
-The previous file focused on **using** retrieval to ground a model.
+The previous chapter was "I have one PDF and one question — can the model answer it?" That is a notebook.
 
-This file focuses on **engineering the system around retrieval**:
-- ingestion
-- indexing
-- search
-- answer generation
-- evaluation
-- monitoring
-- freshness
-- access control
+This chapter is "thousands of documents, hundreds of users, the docs change every day, finance can see finance docs but warehouse cannot, and someone is on call when it breaks." That is a **system**.
 
-This is the difference between:
-- “I made a doc Q&A notebook”
-- and
-- “I built a system people can rely on”
+```text
+NOTEBOOK (chapter 04)                  PRODUCT (this chapter)
+┌───────────────────────┐              ┌──────────────────────────────────────┐
+│ load 1 pdf            │              │ ingest from Notion + S3 + wiki + ... │
+│ chunk it              │              │ schedule re-ingest when docs change  │
+│ embed                 │              │ permission-aware retrieval           │
+│ retrieve top-3        │              │ hybrid search + reranker             │
+│ ask LLM               │              │ answer with citations                │
+│ print answer          │              │ log every query for evals + tracing  │
+└───────────────────────┘              │ alerting when quality drops          │
+   one user, one shot                  └──────────────────────────────────────┘
+                                          many users, always-on, auditable
+```
+
+The skills are different: ingestion, freshness, access control, evaluation, observability.
+
+---
+
+## Mini-glossary: jargon in this chapter
+
+| Term | One-line meaning |
+|---|---|
+| Ingestion | The job that pulls documents from source systems into your pipeline. |
+| Parsing | Turning a raw file (PDF/HTML/DOCX) into clean text + structure. |
+| Enrichment | Adding metadata to chunks (source, author, date, tags). |
+| Indexing | Writing embeddings + metadata into the vector store. |
+| ACL | Access Control List — who is allowed to see this chunk. |
+| Multi-tenant | One system serving many customers/teams without leaking data between them. |
+| Freshness | How quickly new/updated docs become searchable. |
+| Stale chunk | A chunk whose source has changed but the index has not. |
+| Reranker | Second-stage model that re-orders top-k for higher precision. |
+| Faithfulness / Groundedness | Whether the answer actually follows from the cited chunks. |
+| Recall@k / MRR / nDCG | Standard retrieval quality metrics. |
+| Trace | A logged record of one user query: retrieved chunks, prompt, answer, latency. |
+| Eval set | A fixed list of question/expected-answer pairs used to score the system. |
+| Golden answer | The known-correct answer for an eval question. |
+| Guardrail | A check that blocks unsafe / off-policy answers. |
+| SLA | Service Level Agreement — promised latency / uptime numbers. |
 
 ---
 
@@ -40,6 +66,25 @@ sources
   -> answer + citations
   -> evals + traces + monitoring
 ```
+
+### Visual: the same architecture, expanded
+
+```text
+   SOURCES                INGESTION              INDEX                SERVING                OBSERVABILITY
+┌────────────┐         ┌─────────────┐       ┌────────────┐       ┌──────────────┐       ┌──────────────┐
+│ Notion     │──┐      │ pull        │       │            │       │ /retrieve    │       │ traces       │
+│ S3 PDFs    │──┼─────▶│ parse       │──────▶│ vector     │◀──────│ /rerank      │──────▶│ evals        │
+│ Wiki       │──┤      │ chunk       │       │ store      │       │ /generate    │       │ dashboards   │
+│ Tickets    │──┘      │ enrich+ACL  │       │ + metadata │       │ /answer      │       │ alerting     │
+└────────────┘         └─────────────┘       └────────────┘       └──────────────┘       └──────────────┘
+                          ▲                                            │
+                          │                                            ▼
+                       schedules                                   end users
+                       (hourly/daily,                              (chat, support
+                        on-change webhooks)                         tools, agents)
+```
+
+Every box in this diagram becomes a tutorial below.
 
 ---
 

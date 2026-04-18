@@ -5,6 +5,58 @@
 
 ---
 
+## Plain English: what this chapter is about
+
+Chapter 01 (fine-tuning) was about **adapting** existing models.  
+This chapter is about **how training itself works** — every gear inside the machine.
+
+You will learn:
+- what actually happens in one training step (forward → loss → backward → step)
+- how to scale training from one GPU to many GPUs
+- how to use less memory (mixed precision, gradient accumulation)
+- how to debug when training is slow, unstable, or producing NaN losses
+
+By the end, you can read any modern training script and understand every line.
+
+```text
+ONE GPU                          MANY GPUs (DDP)                  HUGE MODELS (FSDP/DeepSpeed)
+┌──────────┐                     ┌──┐ ┌──┐ ┌──┐ ┌──┐              ┌──┐ ┌──┐ ┌──┐ ┌──┐
+│  Model   │                     │M1│ │M2│ │M3│ │M4│              │M¼│ │M¼│ │M¼│ │M¼│
+│  +       │       ──────►       └──┘ └──┘ └──┘ └──┘   ──────►    └──┘ └──┘ └──┘ └──┘
+│  Data    │                       full copy on each                model SHARDED across
+└──────────┘                       different data shards            (each GPU holds ¼)
+ simplest                          batches process in parallel      enables 70B+ models
+```
+
+---
+
+## Mini-glossary for this chapter
+
+| Term | One-line meaning |
+|---|---|
+| **Tensor** | Multi-dimensional array of numbers — the data unit in PyTorch |
+| **Forward pass** | Data flows through model → produces predictions |
+| **Backward pass** | Compute gradients (which weights caused the error?) |
+| **Gradient** | A number per weight saying "nudge this much to reduce loss" |
+| **Optimizer** | Applies gradients to update weights (AdamW is the default) |
+| **Scheduler** | Adjusts the learning rate during training (warmup + decay) |
+| **Epoch** | One full pass through the training data |
+| **Batch** | A group of examples processed together in one step |
+| **Gradient clipping** | Cap gradient size to prevent exploding training |
+| **Gradient accumulation** | Simulate big batches on small GPUs by accumulating across mini-batches |
+| **Mixed precision** | Use 16-bit math instead of 32-bit → faster, less memory |
+| **bf16 / fp16** | Two flavors of 16-bit floats. bf16 is more stable on modern GPUs |
+| **DDP** (Distributed Data Parallel) | Same model copy on each GPU, different data per GPU |
+| **FSDP** (Fully Sharded Data Parallel) | SPLIT the model itself across GPUs (for big models) |
+| **DeepSpeed** | Microsoft library that does FSDP-like sharding (called ZeRO) |
+| **Accelerate** | Hugging Face library that simplifies DDP/FSDP/DeepSpeed launches |
+| **`torch.compile`** | PyTorch feature that speeds up training by compiling the model graph |
+| **NaN** | "Not a number" — appears when training blows up. Means: lower LR or use bf16 |
+| **Perplexity** | How "surprised" a language model is by text. Lower = better |
+| **Checkpoint** | A saved snapshot of model weights you can resume from |
+
+---
+
 ## Why this topic matters
 
 Fine-tuning lets you adapt models.  
@@ -319,6 +371,39 @@ Each GPU:
 - gets a copy of the model
 - processes a different mini-batch
 - synchronizes gradients after backpropagation
+
+### Visual: how DDP works in one step
+
+```text
+                Single big batch of 128 examples
+                            │
+                ┌───────────┼───────────┐
+                │           │           │
+              split       split        split    (DistributedSampler)
+                │           │           │
+        ┌───────▼───┐ ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
+        │  GPU 0    │ │  GPU 1   │ │  GPU 2   │ │  GPU 3   │
+        │  32 samp  │ │  32 samp │ │  32 samp │ │  32 samp │
+        │           │ │          │ │          │ │          │
+        │  forward  │ │ forward  │ │ forward  │ │ forward  │
+        │  backward │ │ backward │ │ backward │ │ backward │
+        │  → grads  │ │ → grads  │ │ → grads  │ │ → grads  │
+        └─────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+              │            │            │            │
+              └────────────┴─────┬──────┴────────────┘
+                                 │
+                          ALL-REDUCE
+                  (average gradients across all GPUs)
+                                 │
+                ┌────────────────┼────────────────┐
+                │                │                │
+        each GPU now has same averaged gradients
+                │                │                │
+        all GPUs do optimizer.step() with same updates
+        → model copies stay in sync
+```
+
+Result: 4× larger effective batch size, same model on every GPU.
 
 ---
 

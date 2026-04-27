@@ -70,6 +70,135 @@ orbitmart-foundations/
 
 ---
 
+## API keys: how to set OpenAI / Anthropic (Claude) / Hugging Face credentials
+
+Many later chapters call hosted models (`openai`, `anthropic`) or download gated models from Hugging Face. These libraries read **environment variables**, so you set the key **once** in your shell and every script picks it up. **Never** hardcode keys in source files or notebooks.
+
+### Step 1 — Get your keys
+
+| Provider | Where to create a key | Env-var name |
+|---|---|---|
+| OpenAI | https://platform.openai.com/api-keys | `OPENAI_API_KEY` |
+| Anthropic (Claude) | https://console.anthropic.com/settings/keys | `ANTHROPIC_API_KEY` |
+| Hugging Face | https://huggingface.co/settings/tokens | `HF_TOKEN` |
+| Azure OpenAI (optional) | Azure Portal → your OpenAI resource | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` |
+
+### Step 2 — Install the SDKs you need
+
+```bash
+pip install openai anthropic              # hosted LLM clients
+pip install python-dotenv                 # to load a .env file in scripts
+pip install huggingface_hub               # for HF auth + model downloads
+```
+
+### Step 3 — Pick ONE of these ways to set the variables
+
+#### Option A — Project-local `.env` file (recommended for tutorials)
+
+Create a file named `.env` in your project root:
+
+```bash
+# .env  (do NOT commit this file)
+OPENAI_API_KEY=sk-...your-openai-key...
+ANTHROPIC_API_KEY=sk-ant-...your-claude-key...
+HF_TOKEN=hf_...your-hugging-face-token...
+```
+
+Add it to `.gitignore` so it never gets pushed:
+
+```bash
+echo ".env" >> .gitignore
+```
+
+Load it at the top of any script:
+
+```python
+from dotenv import load_dotenv
+load_dotenv()   # reads .env into os.environ
+```
+
+#### Option B — Export in your shell (per-terminal)
+
+```bash
+# macOS / Linux (zsh / bash)
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export HF_TOKEN="hf_..."
+```
+
+```powershell
+# Windows PowerShell
+$env:OPENAI_API_KEY    = "sk-..."
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:HF_TOKEN          = "hf_..."
+```
+
+These last only for the current terminal session.
+
+#### Option C — Persist in your shell profile (set once per machine)
+
+```bash
+# macOS / Linux — append to ~/.zshrc or ~/.bashrc
+echo 'export OPENAI_API_KEY="sk-..."'      >> ~/.zshrc
+echo 'export ANTHROPIC_API_KEY="sk-ant-..."' >> ~/.zshrc
+echo 'export HF_TOKEN="hf_..."'             >> ~/.zshrc
+source ~/.zshrc
+```
+
+Now every new terminal automatically has the keys.
+
+#### Option D — Hugging Face CLI (for HF only)
+
+```bash
+huggingface-cli login   # paste your HF_TOKEN when prompted
+```
+
+This stores the token in `~/.cache/huggingface/token` and is read automatically by `transformers`, `datasets`, and `huggingface_hub`.
+
+### Step 4 — Verify it works
+
+```python
+import os
+from openai import OpenAI
+from anthropic import Anthropic
+
+# 1) Sanity check: are the env vars actually set?
+assert os.getenv("OPENAI_API_KEY"),    "OPENAI_API_KEY is missing"
+assert os.getenv("ANTHROPIC_API_KEY"), "ANTHROPIC_API_KEY is missing"
+
+# 2) Tiny OpenAI call
+oai = OpenAI()   # picks up OPENAI_API_KEY from environment
+print(oai.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Say 'ok' in one word."}],
+).choices[0].message.content)
+
+# 3) Tiny Anthropic (Claude) call
+claude = Anthropic()   # picks up ANTHROPIC_API_KEY from environment
+print(claude.messages.create(
+    model="claude-3-5-sonnet-latest",
+    max_tokens=20,
+    messages=[{"role": "user", "content": "Say 'ok' in one word."}],
+).content[0].text)
+```
+
+If both print `ok`, your environment is wired correctly and every later chapter (RAG, agents, evals) will work without further setup.
+
+### Common mistakes
+
+| Mistake | Symptom | Fix |
+|---|---|---|
+| Key pasted in code | Leaks on commit | Move to `.env` and `.gitignore` it |
+| `export` in one terminal, run script in another | `KeyError` / `401` | Use Option A or C, or re-export |
+| Wrong env-var name (e.g. `OPENAI_KEY`) | `AuthenticationError` | Use exact names in the table above |
+| `.env` not loaded | `os.getenv(...)` returns `None` | Call `load_dotenv()` before reading |
+| Free-tier rate limits | `429 Too Many Requests` | Add retries / use a paid tier |
+| Key works locally, fails in CI | CI has no env | Add the key as a CI **secret**, not a plain variable |
+
+> Security: treat API keys like passwords. Rotate immediately if you accidentally commit one. Most providers let you revoke a leaked key from the same dashboard where you created it.
+
+---
+
 ## Core mental model
 
 A modern text model pipeline is:

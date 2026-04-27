@@ -37,6 +37,7 @@ Every guide includes:
 ### If you are starting from zero
 Read the files in this order:
 
+0. [day_zero_prerequisites.md](./day_zero_prerequisites.md) — **start here if you are completely new to AI/ML.** Plain-English primer on AI vs ML vs DL vs LLM, the math you actually need, Python/PyTorch in 5 minutes, and a vocabulary table that links every later term to the chapter that explains it.
 1. [00_foundations.md](./00_foundations.md)
 2. [01_fine_tuning_models.md](./01_fine_tuning_models.md)
 3. [02_training_models.md](./02_training_models.md)

@@ -3,6 +3,8 @@
 **Case study:** OrbitMart support tickets and product descriptions  
 **Updated:** 2026-04-10
 
+> **New to AI entirely?** Read [day_zero_prerequisites.md](./day_zero_prerequisites.md) first. It explains AI vs ML vs DL vs LLM, the math you actually need (vectors, gradients, softmax), Python/PyTorch in 5 minutes, and a vocabulary table — all without sending you to external sources.
+
 ---
 
 ## Why this phase matters

@@ -37,6 +37,7 @@ Every guide includes:
 ### If you are starting from zero
 Read the files in this order:
 
+0. [day_zero_prerequisites.md](./day_zero_prerequisites.md) — **start here if you have never touched AI/ML.** Plain-English primer on AI vs ML vs DL vs LLM, the math you actually need, Python/PyTorch in 5 minutes, and a vocabulary table linking every later term to the chapter that explains it.
 1. [00_foundations.md](./00_foundations.md)
 2. [01_fine_tuning_models.md](./01_fine_tuning_models.md)
 3. [02_training_models.md](./02_training_models.md)
@@ -83,6 +84,7 @@ This tutorial set is aligned to the **current official/public stack checked on 2
 
 | Phase | File | Main output |
 |---|---|---|
+| Day 0 prerequisites | [day_zero_prerequisites.md](./day_zero_prerequisites.md) | You know what AI/ML/DL/LLM mean, the math you need, and the core vocabulary |
 | Foundations | [00_foundations.md](./00_foundations.md) | You can read training code and build small models |
 | Fine-tuning | [01_fine_tuning_models.md](./01_fine_tuning_models.md) | You can decide between prompting, RAG, SFT, DPO, RFT |
 | Training | [02_training_models.md](./02_training_models.md) | You can build and scale training loops |

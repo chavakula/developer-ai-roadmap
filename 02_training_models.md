@@ -1,7 +1,56 @@
 # 02 — Training Models  
 **Goal:** understand the full training loop, from tensors to distributed optimization  
 **Case study:** OrbitMart ticket routing and product-manual language modeling  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [00_foundations.md](./00_foundations.md) first — it explains the four-step loop (forward → loss → backward → optimizer) that this chapter dives much deeper into.
+
+---
+
+## The whole chapter in one paragraph
+
+Chapter 01 was about *adapting* an existing model. This chapter is about *how training itself actually works* — every gear inside the machine. You'll see what happens in a single training step, how to use less memory so your training fits on a small GPU, how to spread training across many GPUs when one isn't enough, and how to debug when training mysteriously breaks (NaN losses, exploding gradients, painfully slow throughput). By the end, no modern training script will look intimidating.
+
+> **Real-life analogy.** Chapter 01 taught you to drive a car. This chapter pops the hood. You learn what an engine is, what spark plugs do, why the radiator matters, and how to tell a slipping clutch from a dead battery. You don't need to be a mechanic to drive — but if your engine starts smoking, knowing how it works saves your day.
+
+### Code teaser: peek inside one training step on an OrbitMart batch
+
+Before we dive into distributed training and ZeRO and FSDP, let's look at what happens **inside one single step** — with all the safety nets you'll need in production: mixed precision, gradient clipping, and a learning-rate scheduler.
+
+```python
+import torch
+import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
+
+# Imagine each OrbitMart email becomes a 128-d embedding from a frozen encoder.
+batch_size, dim, n_teams = 8, 128, 6
+email_vecs = torch.randn(batch_size, dim)         # [8, 128]
+true_teams = torch.randint(0, n_teams, (batch_size,))
+
+model     = nn.Linear(dim, n_teams)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
+scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=100)
+loss_fn   = nn.CrossEntropyLoss()
+scaler    = GradScaler(enabled=False)             # flip to True on a real GPU
+
+for step in range(5):
+    optimizer.zero_grad(set_to_none=True)
+
+    with autocast(enabled=False):                 # mixed precision wrapper
+        logits = model(email_vecs)                # forward
+        loss   = loss_fn(logits, true_teams)
+
+    scaler.scale(loss).backward()                 # safe backward (handles fp16)
+    scaler.unscale_(optimizer)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # safety net
+    scaler.step(optimizer)
+    scaler.update()
+    scheduler.step()
+
+    print(f"step {step}  loss={loss.item():.3f}  lr={scheduler.get_last_lr()[0]:.2e}")
+```
+
+Every serious training script — whether on 1 GPU or 1000 — is built from this same skeleton. The rest of this chapter just adds: many GPUs, bigger models, and faster I/O.
 
 ---
 
@@ -68,6 +117,23 @@ If you understand training deeply, you can:
 - scale from one GPU to many GPUs
 - reason about throughput and bottlenecks
 - create smaller or custom models intelligently
+
+### The story we'll follow in this chapter
+
+Imagine OrbitMart wants to train its **own** small language model on its product catalog and support transcripts. On day 1 you have one laptop GPU. The model is small, training is slow but works. Three weeks later, marketing wants a 10× bigger model trained on 10× more text — it no longer fits on one GPU. You add a second GPU, then four, then eight. Eventually the model itself is too big to fit even on one GPU and has to be **split** across machines.
+
+This chapter walks that exact journey:
+
+| Stage | Tutorial | Real-life equivalent |
+|---|---|---|
+| Train on one GPU, cleanly | Tutorial 1 (clean PyTorch loop) | One chef cooking one dish at a time |
+| Train a tiny language model | Tutorial 2 (causal LM) | Same chef learns a new recipe |
+| Use many GPUs in parallel | Tutorial 3 (DDP) | Hire 4 chefs cooking the same dish in parallel kitchens |
+| Split a giant model across GPUs | Tutorial 4 (FSDP / DeepSpeed) | The dish is so big that 4 chefs each prepare one quarter |
+| Use smaller number formats to go faster | Tutorial 5 (mixed precision) | Cook in a faster oven that loses tiny precision |
+| Make the code itself faster | Tutorial 6 (`torch.compile`, profiling) | Re-arrange the kitchen so chefs walk less |
+
+Every tutorial below maps to one row of that table.
 
 ---
 
@@ -358,6 +424,12 @@ A lower perplexity model can still be worse for business use if:
 
 ## Tutorial 3 — Scale to multiple GPUs with DDP
 
+### Real-life analogy
+
+DDP = **"four chefs, same recipe, different ingredients"**. You hand each chef the **same recipe card** (the model) and give each one a **different basket of ingredients** (a different mini-batch). They all cook in parallel. After every dish, they meet in the middle of the kitchen and **average their notes** on what to change in the recipe (gradient sync). Then everyone updates their recipe card identically and starts the next dish.
+
+Result: 4× more food cooked in the same time, and every chef ends with an identical, slightly-improved recipe card.
+
 ### Why DDP matters
 Single-GPU training hits limits:
 - model too large
@@ -494,6 +566,12 @@ for epoch in range(num_epochs):
 
 ## Tutorial 4 — FSDP vs DeepSpeed
 
+### Real-life analogy
+
+FSDP / DeepSpeed = **"the recipe is too big to fit in one chef's head"**. The model has billions of weights and won't even **fit** on one GPU. So instead of every GPU holding the **whole** model (DDP), each GPU holds **one slice** of the model. When it's time to use a slice, GPUs pass the missing pieces to each other just-in-time, do the calculation, then drop the borrowed pieces to free memory.
+
+DDP scales **batch size**. FSDP / DeepSpeed scales **model size**. You will eventually use both together for the largest models.
+
 When DDP is not enough, the next question is:
 
 > Do I shard model states with FSDP, or use DeepSpeed-style ZeRO approaches?
@@ -547,6 +625,12 @@ It gives you a gentler path into:
 ---
 
 ## Tutorial 5 — Mixed precision and low precision
+
+### Real-life analogy
+
+Mixed precision = **"measure with a kitchen scoop, not a jeweler's scale"**. Most cooking steps don't need milligram precision — a measuring cup is fine and ten times faster to use. But for the *one* step that matters (say, weighing the spice for the final seasoning), you switch back to the precise scale.
+
+That's exactly what mixed precision does: most of the math runs in **smaller, faster** number formats (bf16 / fp16), but the few sensitive parts (weight updates, the master copy of the weights) stay in full precision (fp32). Net effect: 2–3× faster training with almost identical quality.
 
 ### Mixed precision
 Common choices:
@@ -608,6 +692,12 @@ First become stable in bf16/fp16 training.
 ---
 
 ## Tutorial 6 — `torch.compile` and profiling
+
+### Real-life analogy
+
+`torch.compile` = **"meal-prep your training step"**. Without compile, every training step PyTorch decides on the fly which utensils to use and in what order. With `torch.compile`, PyTorch watches your code once, figures out the most efficient sequence of operations, then runs that optimized plan over and over.
+
+Profiling = **"film yourself in the kitchen and see where you stand around doing nothing"**. Most slow training is not because the GPU is slow — it's because the GPU is **waiting** for data, or copying things back and forth needlessly. A profiler shows you exactly where the wasted seconds are.
 
 ### Why `torch.compile` matters
 It can improve training/inference performance, but you must understand:

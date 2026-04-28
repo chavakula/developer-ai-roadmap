@@ -1,7 +1,69 @@
 # 01 — Fine-Tuning Models  
 **Goal:** learn how to adapt pretrained models correctly for real tasks  
 **Case study:** OrbitMart support replies, invoice extraction, and analytics SQL generation  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [00_foundations.md](./00_foundations.md) first — it explains tokens, embeddings, loss, and the training loop in plain English. This chapter assumes you understand them.
+
+---
+
+## The whole chapter in one paragraph
+
+Big general-purpose AI models (GPT, Llama, Claude) already know language. They just don't know **your** business — your tone, your products, your policies, your formats. Fine-tuning is how you teach them, using a few hundred or few thousand examples instead of starting from scratch. There are three main flavors: **show-and-copy** (SFT), **preference learning from pairs** (DPO), and **score-based learning** (RFT). And there are clever tricks (LoRA, QLoRA) that let you fine-tune big models on a single small GPU.
+
+> **Real-life analogy.** You hire a brilliant new employee on day one. They already speak English fluently and know how the world works. You don't re-teach them English — you spend a week showing them "this is how we write emails here, this is our refund policy, this is how an approved invoice looks." That week of on-the-job onboarding is fine-tuning.
+
+### Code teaser: 30 seconds of fine-tuning, OrbitMart edition
+
+Here is the absolute smallest "hello world" of fine-tuning. We take 6 OrbitMart support replies and teach a small model OrbitMart's tone ("Hi {name}, thanks for reaching out…"). Real fine-tuning uses thousands of examples, but the shape of the code is identical.
+
+```python
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer, AutoModelForCausalLM,
+    TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+)
+
+orbitmart_replies = [
+    "Hi Maya, thanks for reaching out about order 88421. It shipped today and arrives Friday.",
+    "Hi Sam, sorry your NovaBuds aren't pairing. Please try holding the button for 8 seconds.",
+    "Hi Lin, your refund of $129.00 has been issued and will appear in 3-5 business days.",
+    "Hi Raj, the AlphaDock supports dual 4K monitors over a single USB-C cable.",
+    "Hi Pat, returns are free within 14 days. Here is your prepaid label: <link>.",
+    "Hi Jess, the FlexCharge pad is Qi2-certified and works with iPhone 13 and newer.",
+]
+
+tok = AutoTokenizer.from_pretrained("sshleifer/tiny-gpt2")
+tok.pad_token = tok.eos_token
+model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+
+ds = Dataset.from_dict({"text": orbitmart_replies}).map(
+    lambda b: tok(b["text"], truncation=True, padding="max_length", max_length=64),
+    batched=True,
+)
+
+args = TrainingArguments(
+    output_dir="./orbitmart-tone",
+    per_device_train_batch_size=2,
+    num_train_epochs=3,
+    logging_steps=1,
+    report_to="none",
+)
+
+Trainer(
+    model=model,
+    args=args,
+    train_dataset=ds,
+    data_collator=DataCollatorForLanguageModeling(tok, mlm=False),
+).train()
+
+print(model.generate(
+    **tok("Hi Alex, thanks for reaching out about", return_tensors="pt"),
+    max_new_tokens=20,
+)[0])
+```
+
+In ~30 lines you have just done what every "fine-tune an LLM" tutorial does — only with toy data. The rest of this chapter shows you how to do it for real.
 
 ---
 
@@ -198,6 +260,12 @@ Never train on everything.
 ---
 
 ## Tutorial 1 — Supervised fine-tuning for brand-consistent support replies
+
+### Real-life analogy
+
+Think of SFT as **"shadowing the senior agent on day 1"**. A new support hire sits next to a veteran for a week. For each customer email, the veteran shows the exact reply they would send. The new hire copies the **style, tone, and structure** until they can write like the veteran on their own.
+
+SFT does the same thing for the model: you show it (input → ideal output) pairs. Hundreds of these. The model learns to imitate.
 
 ### Business problem
 OrbitMart wants support drafts that:
@@ -624,6 +692,12 @@ A model that produces beautiful JSON but the wrong totals is still a bad finance
 
 ## Tutorial 3 — DPO for response preference alignment
 
+### Real-life analogy
+
+Think of DPO as **"the editor's red pen"**. Two junior writers each draft a reply to the same customer. An experienced editor doesn't say "here's the perfect reply" — they just say *"Reply A is better than Reply B"* and hand both back. After hundreds of A-vs-B judgments, the writers learn the editor's taste even though no single "perfect" answer was ever given.
+
+DPO works the same way: you give the model **pairs** of answers, marking one as preferred. The model shifts its style toward the preferred kind. Use this when there is no single right answer but you can clearly say *"this version is better than that one"*.
+
 ### Business problem
 OrbitMart has multiple acceptable support answers, but some are better:
 - shorter
@@ -732,6 +806,12 @@ trainer.train()
 ---
 
 ## Tutorial 4 — RFT for SQL generation with graders
+
+### Real-life analogy
+
+Think of RFT as **"learning to play darts"**. Nobody hands you the perfect throwing motion. You throw, the dartboard tells you the score, you adjust, throw again. After thousands of throws, your arm has learned what works — guided only by the score.
+
+RFT works the same way: the model generates an answer, an automatic **grader** gives it a score (does the SQL run? does it return the right rows?), and the model adjusts to maximize the score. Use this when you can **automatically check** whether an answer is correct, even if you can't write the perfect answer yourself.
 
 ### Business problem
 OrbitMart wants a BI assistant that converts analytics questions into SQL.

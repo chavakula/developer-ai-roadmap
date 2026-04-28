@@ -1,7 +1,93 @@
 # 06 — Creating Agents  
 **Goal:** build tool-using, stateful, approval-aware, traceable agents  
 **Case study:** OrbitMart support operations copilot  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [00_foundations.md](./00_foundations.md) for the basics, then come back. Agents build on every prior chapter.
+
+---
+
+## The whole chapter in one paragraph
+
+A **chatbot answers**. An **agent does**. An agent can call tools (look up an order, send an email, refund a payment), take multi-step actions, remember what it did, ask a human before risky moves, and leave a trail of what it did and why. This chapter teaches you the agent loop (model decides → call tool → read result → decide again), how to define safe tools, when to require human approval, and how to observe and debug what the agent is actually doing.
+
+> **Real-life analogy.** A chatbot is like a **receptionist** who tells you "I'll have someone call you back." An agent is like a **junior assistant** who actually picks up the phone, looks up your order in the system, sends the refund, and emails you the confirmation — all while keeping a log of every step so their manager can review it later. The chatbot describes the world; the agent changes the world.
+
+### Code teaser: an OrbitMart support agent in 40 lines
+
+This is the entire agent recipe: define safe tools, let the model pick which one to call, run it, feed the result back, repeat. Real agents add memory, approvals, and tracing on top — but the core loop is exactly this.
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI()
+
+# 1. SAFE TOOLS — tiny Python functions the agent is allowed to call.
+ORDERS = {
+    "88421": {"status": "shipped", "eta": "2026-04-30", "customer": "Alex"},
+    "99102": {"status": "processing", "eta": "2026-05-02", "customer": "Maya"},
+}
+
+def get_order_status(order_id: str) -> dict:
+    return ORDERS.get(order_id, {"error": f"order {order_id} not found"})
+
+def issue_refund(order_id: str, amount: float) -> dict:
+    # In real life: call payments API. Refunds usually require human approval first!
+    return {"order_id": order_id, "refunded": amount, "status": "refunded"}
+
+TOOLS = {
+    "get_order_status": get_order_status,
+    "issue_refund":     issue_refund,
+}
+
+# 2. TOOL SCHEMAS — tell the model what each tool does and what arguments it takes.
+TOOL_SPECS = [
+    {"type": "function", "function": {
+        "name": "get_order_status",
+        "description": "Look up the status and ETA of an OrbitMart order.",
+        "parameters": {"type": "object",
+            "properties": {"order_id": {"type": "string"}},
+            "required": ["order_id"]}}},
+    {"type": "function", "function": {
+        "name": "issue_refund",
+        "description": "Refund an OrbitMart order. Requires manager approval over $100.",
+        "parameters": {"type": "object",
+            "properties": {"order_id": {"type": "string"},
+                           "amount":   {"type": "number"}},
+            "required": ["order_id", "amount"]}}},
+]
+
+# 3. THE AGENT LOOP
+def agent(user_msg: str, max_steps: int = 4) -> str:
+    messages = [
+        {"role": "system", "content": "You are an OrbitMart support agent. Use tools when needed."},
+        {"role": "user", "content": user_msg},
+    ]
+    for _ in range(max_steps):
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini", messages=messages, tools=TOOL_SPECS,
+        ).choices[0].message
+        messages.append(resp)
+
+        if not resp.tool_calls:                # model is done
+            return resp.content
+
+        for call in resp.tool_calls:           # run each requested tool
+            args = json.loads(call.function.arguments)
+            result = TOOLS[call.function.name](**args)
+            print(f"  ↳ {call.function.name}({args}) → {result}")
+            messages.append({"role": "tool", "tool_call_id": call.id,
+                             "content": json.dumps(result)})
+
+    return "(agent gave up after max_steps)"
+
+print(agent("Where is order 88421 and what's the ETA?"))
+#   ↳ get_order_status({'order_id': '88421'}) → {'status': 'shipped', 'eta': '2026-04-30', ...}
+# Your order 88421 has shipped and is expected to arrive on April 30, 2026.
+```
+
+That's an agent. Add memory, traces, human-approval gates for risky tools (`issue_refund` over $100!), and evals — and you have a production system. Everything else in this chapter is making this loop safe, observable, and trustworthy.
 
 ---
 
@@ -152,9 +238,34 @@ This is a great agent case because it has:
 - multi-step reasoning
 - measurable success/failure
 
+### The story we'll follow in this chapter
+
+OrbitMart's support team is drowning. For every customer email an agent has to: look up the order, check the policy, draft a reply, sometimes issue a refund, sometimes hand off to finance. You will build the digital coworker that does this safely — not a fully autonomous robot, a careful coworker that **asks for approval** before doing anything risky.
+
+| Step | Tutorial | Real-life equivalent |
+|---|---|---|
+| One agent + a few tools | Tutorial 1 (single agent) | A new hire with a phone book and a few buttons |
+| Make the output predictable | Tutorial 2 (structured outputs) | The hire writes on a printed form, not free-text |
+| Block risky actions until a human says yes | Tutorial 3 (approvals) | "Refunds over $100 need supervisor signature" |
+| Remember the conversation | Tutorial 4 (sessions) | Same hire, same chat, doesn't ask your name 3 times |
+| Log every step | Tutorial 5 (tracing) | A logbook so you can replay any case |
+| Block bad inputs / outputs | Tutorial 6 (guardrails) | "Don't paste customer credit cards into the chat" |
+| Bring in specialists when needed | Tutorial 7 (multi-agent + handoffs) | Transfer rare finance cases to the finance team |
+| Choose: call a specialist as a tool, or hand over | Tutorial 8 (tools vs handoffs) | "Ask a colleague" vs "transfer the call" |
+| Plug in standard tools from anywhere | Tutorial 9 (MCP) | Universal USB-C for tools |
+| Score the whole workflow | Tutorial 10 (evals) | Mystery-shopper test plus QA review |
+
+By the end you have a coworker, not a chatbot.
+
 ---
 
 ## Tutorial 1 — Build a single tool-using agent
+
+### Real-life analogy
+
+A single agent with tools = **"a new hire with a phone book and a few buttons"**. They can look things up (read tools) and press buttons (action tools). They are not creative, not autonomous — they follow instructions and use the right tool for the right question.
+
+This sounds simple, but solves a surprising amount of real work. Don't jump to multi-agent until this isn't enough.
 
 ### Why start here
 A single agent with good tools solves more than many people expect.
@@ -242,6 +353,12 @@ Use them when:
 
 ## Tutorial 3 — Human approval for risky actions
 
+### Real-life analogy
+
+Approval gates = **"refunds over $100 need supervisor signature"**. The agent can do small, safe things on its own (read order status, draft a reply). For anything **irreversible** (issuing a refund, sending an email to a customer, changing a payment account), it must **stop and ask** a human first.
+
+This is the single most important production pattern. It turns a scary autonomous bot into a safe assistant.
+
 ### Business problem
 The agent can suggest a refund, but must not issue one without approval.
 
@@ -267,6 +384,12 @@ Refunds, cancellations, escalations, and account changes are exactly where autom
 ---
 
 ## Tutorial 4 — Sessions and conversation state
+
+### Real-life analogy
+
+Sessions = **"the same hire, the same chat"**. Without sessions the agent has amnesia: every message is treated as a stranger. With sessions, when the customer replies "yes please", the agent still remembers what "yes" is referring to.
+
+A session is just a conversation ID + the list of messages and tool results so far.
 
 ### Why session management matters
 Many workflows are multi-turn:
@@ -310,6 +433,12 @@ They help with:
 
 ## Tutorial 5 — Tracing and observability
 
+### Real-life analogy
+
+Tracing = **"flight recorder for every agent run"**. After the fact, when a customer complains "the bot promised me a refund and never delivered", you can pull the trace and see, step-by-step: what the user said, which tools the agent called, what each tool returned, what the agent decided next, and what it told the customer.
+
+Without traces, debugging an agent is guesswork. With traces, every failure is reproducible.
+
 ### Why traces are essential
 Without traces, debugging agents becomes guesswork.
 
@@ -333,6 +462,12 @@ Do not ship serious agent workflows without traces.
 ---
 
 ## Tutorial 6 — Guardrails
+
+### Real-life analogy
+
+Guardrails = **"the bumpers on a bowling lane"**. They don't roll the ball for you, they just stop it from going into the gutter. Examples: block prompts containing customer credit cards, refuse off-topic questions, refuse to discuss competitors, refuse to give legal advice.
+
+Guardrails run **around** the agent — before the input goes in (input guardrails) and before the output goes out (output guardrails).
 
 Guardrails are validations that protect workflow boundaries.
 
@@ -491,6 +626,12 @@ Use handoffs only when the workflow benefits from transferred control.
 
 ## Tutorial 9 — MCP integration
 
+### Real-life analogy
+
+MCP = **"USB-C for tools"**. Before MCP, every agent framework had its own way to expose tools (different code, different schemas). With MCP, any tool that speaks the protocol can be plugged into any compatible agent. Need a calendar tool? A database tool? A payments tool? If they speak MCP, they just snap in.
+
+This is what turns ad-hoc agent demos into a real ecosystem.
+
 ### What MCP is
 MCP standardizes how applications expose:
 - tools
@@ -519,6 +660,12 @@ MCP can expose powerful capabilities, so you must design:
 ---
 
 ## Tutorial 10 — Evaluate agent workflows
+
+### Real-life analogy
+
+Agent evals = **"mystery shopper for your coworker"**. You write a fixed set of realistic scenarios ("customer asks about a missing order", "customer asks for a refund on an opened item") and the expected behavior ("agent should call get_order_status, then ask for the order ID, then…"). You replay these scenarios after every change.
+
+For agents you score not just the **final answer** but the **path**: did it pick the right tool? did it stop at the approval gate? did it hand off when it should have?
 
 ### Start with traces
 Trace grading is often the fastest way to debug an agent workflow.

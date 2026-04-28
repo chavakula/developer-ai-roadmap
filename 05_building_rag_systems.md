@@ -1,7 +1,75 @@
 # 05 — Building RAG Systems  
 **Goal:** turn retrieval from a prototype into a production-style system  
 **Case study:** OrbitMart enterprise knowledge assistant  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [04_empowering_models_with_rag.md](./04_empowering_models_with_rag.md) first — this chapter assumes you've built a basic RAG pipeline already.
+
+---
+
+## The whole chapter in one paragraph
+
+Chapter 04 was a notebook: one PDF, one question, one answer. This chapter is the real world: thousands of documents that change every day, hundreds of users with different permissions, an on-call engineer when things break, and the need to actually *prove* the answers are good. You'll learn how to ingest from real sources (S3, Notion, wikis), keep the index fresh as docs change, enforce who-sees-what, evaluate quality with real metrics, and observe everything when something goes wrong at 2 AM.
+
+> **Real-life analogy.** Chapter 04 was building a single bookshelf in your living room. This chapter is running an entire **public library**: getting deliveries from publishers (ingestion), shelving and re-shelving as new editions arrive (freshness), making sure children can't borrow adult books (access control), tracking what's checked out (logging), measuring whether visitors actually find what they came for (eval), and having a librarian on call when the catalog system crashes (observability).
+
+### Code teaser: production touches for an OrbitMart RAG system
+
+The difference between "works in a notebook" and "works for 10,000 OrbitMart employees" is in the boring details: metadata, permissions, evaluation, and traces. Here is what each looks like in code.
+
+```python
+from dataclasses import dataclass, field
+from typing import Literal
+import time, uuid, json
+
+# 1. CHUNK + METADATA — every chunk knows where it came from and who can see it.
+@dataclass
+class Chunk:
+    id: str
+    text: str
+    source: str                       # "notion://policies/refunds"
+    updated_at: float                 # for freshness checks
+    acl: list[Literal["support", "warehouse", "finance", "public"]]
+    tags: list[str] = field(default_factory=list)
+
+binder = [
+    Chunk("c1", "Laptops: 14-day return window.", "notion://policies/returns",
+          time.time(), ["support", "public"], ["returns"]),
+    Chunk("c2", "Wholesale pricing tier B: 18% off list.", "sap://pricing/b",
+          time.time(), ["finance"], ["pricing"]),     # finance only!
+    Chunk("c3", "Warehouse SOP: scan SKU at bay 4 before forklift move.", "wiki://wh/sop",
+          time.time(), ["warehouse"], ["sop"]),
+]
+
+# 2. PERMISSION-AWARE RETRIEVAL — a customer-support agent must NOT see finance docs.
+def retrieve(query: str, user_role: str, k: int = 3) -> list[Chunk]:
+    visible = [c for c in binder if user_role in c.acl]
+    # In real life: vector search across `visible`. Here we just keyword-match.
+    return [c for c in visible if any(w in c.text.lower() for w in query.lower().split())][:k]
+
+# 3. TRACE — log every query for evals + debugging at 2am.
+def answer(query: str, user_role: str) -> dict:
+    trace_id = str(uuid.uuid4())
+    t0 = time.time()
+    hits = retrieve(query, user_role)
+    response = {
+        "trace_id": trace_id,
+        "user_role": user_role,
+        "query": query,
+        "retrieved": [c.id for c in hits],
+        "answer": f"Based on {len(hits)} policy snippet(s)...",
+        "latency_ms": int((time.time() - t0) * 1000),
+    }
+    print("TRACE:", json.dumps(response))
+    return response
+
+# 4. RUN — same query, two different users, two different result sets.
+answer("laptop return",   user_role="support")    # sees c1
+answer("wholesale pricing", user_role="support")  # sees nothing (correctly!)
+answer("wholesale pricing", user_role="finance")  # sees c2
+```
+
+Metadata, ACLs, traces, and a clear input/output contract — those four things turn a notebook into a system. The rest of this chapter scales each of them up.
 
 ---
 
@@ -86,6 +154,33 @@ sources
 
 Every box in this diagram becomes a tutorial below.
 
+### The story we'll follow in this chapter
+
+In chapter 04 you built a RAG **demo**: one PDF, one question, one answer. It worked on your laptop.
+
+Now imagine OrbitMart says: *"Make this work for the whole company."* Suddenly:
+- Docs come from **5 different sources** (Notion, S3, wiki, ticket system, Drive).
+- Docs **change every day** — yesterday's policy is wrong today.
+- **Finance** can see finance docs but **warehouse** must not.
+- **Hundreds of users** ask questions every minute.
+- When the bot is wrong, you need to know **why** — which chunks did it pull?
+
+This chapter is the journey from the demo to the production system:
+
+| Step | Tutorial | Real-life equivalent |
+|---|---|---|
+| Pull docs from many sources automatically | Tutorial 1 (ingestion) | A library cart that visits every department daily |
+| Cut docs into the right size | Tutorial 2 (chunking) | Decide whether to file by paragraph or by page |
+| Combine search methods | Tutorial 3 (retrieval) | Two librarians at the desk (keyword + meaning) |
+| Permission-aware search | Tutorial 4 (multi-tenant + ACL) | A library card that only opens certain rooms |
+| Re-index when docs change | Tutorial 5 (freshness) | Throw out yesterday's newspaper, file today's |
+| Have the model write the final answer | Tutorial 6 (generation) | The senior agent dictates the customer reply |
+| Score the system on a fixed test set | Tutorial 7 (evals) | Mystery-shopper QA program |
+| Log every query and watch quality drift | Tutorial 8 (observability) | CCTV + monthly QA review |
+| Make it cheap and fast | Tutorial 9 (cost / latency) | Optimize the kitchen so dishes arrive hot and on budget |
+
+By the end you have a system you can hand to ops without crossing your fingers.
+
 ---
 
 ## OrbitMart production use case
@@ -116,6 +211,12 @@ That means the RAG system must handle:
 ---
 
 ## Tutorial 1 — Design the ingestion pipeline
+
+### Real-life analogy
+
+Ingestion = **"the library acquisitions team"**. Every morning they visit each department, collect anything new (memos, contracts, manuals), strip the staples, photocopy what's needed, label each page with where it came from and who is allowed to read it, and file it in the catalog.
+
+In RAG terms: a scheduled job pulls from each source (Notion, S3, wiki, ticket system), parses each file (PDF → text), tags it with metadata (source, author, date, ACL), and writes it into the vector store. Without this, your search index goes stale within days.
 
 ### Step 1 — list your source systems
 Example:
@@ -171,6 +272,12 @@ That gives you re-index flexibility later.
 ---
 
 ## Tutorial 2 — Chunking strategy as a design decision
+
+### Real-life analogy
+
+Chunking = **"how do you cut up a long document for index cards?"** Too small (one sentence per card) and you lose context ("refunds are processed" — by whom? when?). Too big (one whole policy per card) and the search returns way more text than fits in the prompt and the answer drowns in noise.
+
+The sweet spot is usually **a paragraph or two with overlap** — like cutting a recipe book into one-recipe cards rather than one-step or one-chapter chunks.
 
 Chunking is not a boring preprocessing step.  
 It changes system quality.
@@ -251,6 +358,12 @@ Choose different indexes based on:
 
 ## Tutorial 4 — Multi-tenant and access control design
 
+### Real-life analogy
+
+ACL = **"a library card that only opens certain rooms"**. Finance staff swipe and the door to finance opens; warehouse staff swipe and only their room opens. The exact same library, but each visitor's catalog search returns only what their card allows.
+
+In code: every chunk is tagged with `acl: ["finance"]` or `acl: ["warehouse", "support"]`. Every search filters by the user's permissions before it computes similarity. Get this wrong and you've leaked private documents — it must be enforced at the **store**, not the prompt.
+
 This is where many demos fail in real organizations.
 
 ### Questions you must answer
@@ -272,6 +385,12 @@ Enforce ACLs in retrieval.
 ---
 
 ## Tutorial 5 — Freshness and re-indexing
+
+### Real-life analogy
+
+Freshness = **"throw out yesterday's newspaper, file today's"**. The return-policy PDF was edited last night; if your index still contains the old version, the bot confidently quotes outdated rules.
+
+Three common patterns: re-index on a **schedule** (every hour), re-index on a **webhook** (the moment a doc changes), or re-index on **read** (lazy). Most production systems use a mix.
 
 ### Why freshness matters
 RAG fails badly when:
@@ -329,6 +448,12 @@ Return:
 ---
 
 ## Tutorial 7 — Evaluate the RAG system
+
+### Real-life analogy
+
+Evals = **"mystery shopping for your bot"**. You write a fixed list of 50 realistic customer questions and the answer you'd accept (the "golden answer"). Every time you change something — swap embedder, change chunk size, tweak the prompt — you re-run the 50 questions and see if the score went up or down.
+
+Without evals you are guessing. With evals you know whether yesterday's change made the bot better or worse, before customers find out.
 
 ### The four evaluation layers
 
@@ -426,6 +551,12 @@ print(result)
 ---
 
 ## Tutorial 8 — Observability and regression testing
+
+### Real-life analogy
+
+Observability = **"CCTV + receipts in a restaurant"**. For every dish that goes out you can see: which customer ordered it, what ingredients went in, how long it took, and how the customer rated it. When a dish goes wrong, you can replay exactly what happened.
+
+For RAG, every single query should be logged with: the user, the question, which chunks were retrieved, the prompt sent to the model, the answer, the latency, and (if available) the user's thumbs up/down. This is what lets you debug the **one** bad answer out of 10,000.
 
 ### Log each stage
 For every request, log:

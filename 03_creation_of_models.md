@@ -1,7 +1,56 @@
 # 03 — Creation of Models  
 **Goal:** move from “using models” to “designing model artifacts”  
 **Case study:** OrbitMart manuals, support logs, and custom tokenizer/model packaging  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [00_foundations.md](./00_foundations.md) first — it explains tokenizers, embeddings, and model layers, which this chapter assumes.
+
+---
+
+## The whole chapter in one paragraph
+
+So far you've **used** models that other people built. This chapter teaches you to **build and ship your own model package** — your own tokenizer, your own model class, your own configuration, packaged so anyone on your team (or the public) can install it with one line of code. You'll design the shape of the model (depth, width), train a custom tokenizer on your domain words, and bundle everything into a Hugging Face–style folder that just works.
+
+> **Real-life analogy.** Up to now you've been buying ready-made cakes from a bakery. This chapter teaches you to *open your own bakery*. You design the recipe (config), bake the actual cake (weights), wrap it nicely (model card), put it in a labeled box (package layout), and put it on the shelf so anyone walking in can grab one and know exactly what they're getting.
+
+### Code teaser: ship an OrbitMart-branded model in 20 lines
+
+This is the smallest possible end-to-end "build and ship a model" example. We design the architecture, save it in Hugging Face format, and reload it just like you would any famous model.
+
+```python
+from transformers import (
+    GPT2Config, GPT2LMHeadModel, GPT2Tokenizer,
+    AutoModelForCausalLM, AutoTokenizer,
+)
+
+# 1. Design the model OrbitMart needs (small, on-device, 4 layers).
+config = GPT2Config(
+    vocab_size=8000,    # we'll train our own tokenizer on OrbitMart manuals
+    n_positions=512,    # max input length
+    n_layer=4,          # depth
+    n_head=4,           # attention heads
+    n_embd=256,         # width
+)
+model = GPT2LMHeadModel(config)
+
+print(f"OrbitMart-NovaLM has {sum(p.numel() for p in model.parameters()):,} parameters")
+# OrbitMart-NovaLM has 5,431,808 parameters   (a tiny baby model)
+
+# 2. Borrow GPT-2's tokenizer for the demo (in the chapter you'll train your own).
+tok = GPT2Tokenizer.from_pretrained("gpt2")
+tok.pad_token = tok.eos_token
+
+# 3. Save it as a proper Hugging Face package.
+model.save_pretrained("./orbitmart-novalm")
+tok.save_pretrained("./orbitmart-novalm")
+
+# 4. Anyone on the OrbitMart team now loads it with one line.
+reloaded = AutoModelForCausalLM.from_pretrained("./orbitmart-novalm")
+reloaded_tok = AutoTokenizer.from_pretrained("./orbitmart-novalm")
+print(reloaded.config.n_layer, "layers reloaded successfully")
+```
+
+That folder — with `config.json`, `model.safetensors`, tokenizer files — is what "a model" actually means in the modern ecosystem. The rest of this chapter shows how to fill it with real OrbitMart-trained weights and ship it internally or to the Hugging Face Hub.
 
 ---
 
@@ -26,6 +75,23 @@ JUST WEIGHTS  (not enough)              A REAL MODEL PACKAGE  (what we ship)
 ```
 
 A usable model is a **package**, not just a weight file.
+
+### The story we'll follow in this chapter
+
+Imagine OrbitMart's data team says: *"Generic models do badly on our jargon — 'GaN charger', 'SKU-8842-A', 'PoE injector'. Can we ship our own model that knows our domain?"*
+
+In this chapter you become the model maker. You will:
+
+| Step | Tutorial | Real-life equivalent |
+|---|---|---|
+| Build a custom **dictionary** for OrbitMart words | Tutorial 1 (tokenizer training) | Print a domain glossary so the team stops misspelling jargon |
+| Decide the model's **shape** (depth, width) | Tutorial 2 (config) | Sketch a building's blueprint before laying bricks |
+| Build the actual model **class** | Tutorial 3 (custom model) | Pour the foundation and put up the walls |
+| Save it so others can reload | Tutorial 4 (save / load) | Box up the finished product with an instruction manual |
+| Add a task-specific **head** | Tutorial 5 (heads) | Bolt on the right tool for the job (drill bit, screwdriver bit) |
+| Make it Hugging Face friendly | Tutorial 6 (package layout) | Print barcodes and a model card so anyone can pick it up and use it |
+
+By the end, OrbitMart has its own first-party model that anyone on the team can install with one line of code.
 
 ---
 
@@ -83,6 +149,12 @@ You should study model creation if you want to:
 ---
 
 ## Tutorial 1 — Train a domain tokenizer
+
+### Real-life analogy
+
+A tokenizer is a **dictionary**. A generic English dictionary has "charger" and "battery" but doesn't know that **"GaN charger"** is one specific product, or that **"SKU-8842-A"** is a single ID. Every time the model sees these, the generic tokenizer chops them into ugly fragments (`G`, `aN`, ` charger`) which wastes tokens and hurts learning.
+
+Training a domain tokenizer = **printing your own glossary** for OrbitMart. After training, common phrases like `GaN charger` or `Qi2` get their own single token — shorter prompts, faster training, better results.
 
 ### Business problem
 OrbitMart’s internal text has many domain terms:
@@ -223,6 +295,12 @@ If your domain tokenizer produces fewer awkward pieces, that is often a good sig
 
 ## Tutorial 2 — Build a tiny transformer config
 
+### Real-life analogy
+
+A config is a **blueprint** before construction. Before pouring concrete you decide: how many floors? how wide? how many rooms per floor? You don't build first and measure later.
+
+A model config answers the same questions for a transformer: how many layers (floors)? how wide is each layer (rooms)? how big is the vocabulary (front-door capacity)? how long can a sequence be (corridor length)? Get these numbers down on paper *first* so you don't waste a week training a building with no doors.
+
 ### What a config defines
 A config tells the framework how to build the model.
 
@@ -266,6 +344,12 @@ You are learning that architecture is a set of concrete design decisions, not ma
 ---
 
 ## Tutorial 3 — Create a custom model class
+
+### Real-life analogy
+
+The blueprint (config) is just a paper plan. The model **class** is the actual construction crew. It says: *"Given this blueprint, here is the Python code that lays the embedding floor, stacks the transformer blocks, and bolts on the output layer."*
+
+If you change the blueprint (e.g. "now we want 12 floors"), the same crew can build the bigger building — you don't rewrite the crew, you just hand them a new blueprint.
 
 ### Minimal custom model idea
 For learning, create a tiny decoder-only model with:
@@ -359,6 +443,12 @@ class OrbitTinyLMWithBlocks(PreTrainedModel):
 
 ## Tutorial 4 — Save and reload like a real model package
 
+### Real-life analogy
+
+A trained model in memory is like a finished cake on the counter — useless to anyone who isn't standing in your kitchen. Saving = **putting it in a box** with the recipe card and serving instructions, so a colleague can take it home and reheat it tomorrow.
+
+In the model world that box has three things: weights (the cake), config (the recipe), and tokenizer (the serving fork). Hugging Face's `save_pretrained` / `from_pretrained` is the box.
+
 One powerful Hugging Face convention is `save_pretrained()` and `from_pretrained()`.
 
 ### Save
@@ -387,6 +477,12 @@ Reusable model artifacts reduce chaos across:
 
 ## Tutorial 5 — Add task-specific heads
 
+### Real-life analogy
+
+A pretrained transformer is a **power drill body**. The same drill can do many jobs by changing the **bit** at the end: a screwdriver bit for screws, a drill bit for holes, a sander bit for smoothing.
+
+In ML, the "drill body" is the transformer (it produces hidden vectors). The "bit" is the **task head**: a classifier head for labels, a span head for question answering, a token-level head for tagging. Same body, different bit — different job.
+
 Many real model packages are:
 - a shared backbone
 - plus one or more heads
@@ -409,6 +505,10 @@ It lets you reuse the same learned representation across business tasks.
 ---
 
 ## Tutorial 6 — Build a Hugging Face-compatible package layout
+
+### Real-life analogy
+
+This is the **barcode + nutrition label** step. Your model works perfectly, but until it has a standard layout (`config.json`, `model.safetensors`, tokenizer files, README) other people's code can't find the parts. Putting your files in the standard layout means anyone in the world can do `AutoModel.from_pretrained("orbitmart/orbit-tiny-lm")` and it Just Works.
 
 A typical custom package can look like:
 

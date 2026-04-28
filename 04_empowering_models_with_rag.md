@@ -1,7 +1,56 @@
 # 04 — Empowering Models with RAG  
 **Goal:** make models useful on private, fresh, and domain-specific knowledge without changing weights  
 **Case study:** OrbitMart return policies, product manuals, and supplier docs  
-**Updated:** 2026-04-10
+**Updated:** 2026-04-28
+
+> **First time here?** Read [00_foundations.md](./00_foundations.md) first — it explains embeddings, which are the heart of RAG.
+
+---
+
+## The whole chapter in one paragraph
+
+A pretrained AI model only knows what it saw during training. It does not know your company's return policy, last week's price list, or yesterday's product launch. Instead of retraining the model every time something changes (slow and expensive), **RAG** (Retrieval-Augmented Generation) hands the model an *open book* at answer time: search the right documents → paste the relevant passage into the prompt → let the model write a grounded answer with citations. No retraining required.
+
+> **Real-life analogy.** A new employee on their first day. Without RAG, you ask them "what's our return policy for laptops?" and they guess: *"30 days?"* (wrong, and they don't know it). With RAG, they grab the policy binder off the shelf, flip to the right page, read "laptops: 14 days," and tell you the correct answer — pointing at the page they used. Same employee, but now they have access to the right information at the right time.
+
+### Code teaser: a 25-line RAG pipeline for OrbitMart's policy binder
+
+The simplest possible RAG pipeline, end to end. We embed OrbitMart's policies, retrieve the most relevant one for a customer question, and ask the model to answer using only that snippet.
+
+```python
+from sentence_transformers import SentenceTransformer
+import numpy as np
+
+# 1. Our "policy binder" — in production this is hundreds of PDF pages.
+policies = [
+    "Laptops may be returned within 14 days of delivery in original packaging.",
+    "NovaBuds and other earbuds have a 30-day return window for hygiene reasons.",
+    "AlphaDock and FlexCharge accessories carry a 1-year limited warranty.",
+    "Refunds are processed within 3-5 business days after we receive the return.",
+    "Shipping is free on orders over $50; standard delivery takes 2-4 business days.",
+]
+
+encoder = SentenceTransformer("all-MiniLM-L6-v2")
+policy_vecs = encoder.encode(policies, normalize_embeddings=True)   # shape: [5, 384]
+
+def answer(question: str, top_k: int = 2) -> str:
+    q_vec = encoder.encode([question], normalize_embeddings=True)[0]
+    scores = policy_vecs @ q_vec                  # cosine similarity
+    top    = np.argsort(scores)[::-1][:top_k]
+    context = "\n- ".join(policies[i] for i in top)
+    # In a real app, send this prompt to GPT/Claude/etc.
+    return f"Use ONLY this policy text:\n- {context}\n\nQ: {question}\nA:"
+
+print(answer("How long do I have to return a laptop?"))
+# Use ONLY this policy text:
+# - Laptops may be returned within 14 days of delivery in original packaging.
+# - Refunds are processed within 3-5 business days after we receive the return.
+#
+# Q: How long do I have to return a laptop?
+# A:
+```
+
+That's the entire idea of RAG. The rest of the chapter is about doing this *well*: chunking long PDFs, hybrid search, rerankers, and forcing the model to refuse when the binder doesn't have the answer.
 
 ---
 
@@ -30,6 +79,21 @@ CLOSED-BOOK EXAM (no RAG)              OPEN-BOOK EXAM (RAG)
 ```
 
 RAG = **Retrieval-Augmented Generation**: retrieve relevant text → put it in the prompt → let the model write an answer that is grounded in that text.
+
+### The story we'll follow in this chapter
+
+Imagine OrbitMart's customer support team has a binder full of policies: returns, warranties, shipping, RMA. The chatbot they shipped last month keeps **inventing** policies that don't exist ("30-day return on laptops" — actually it's 14). Customers complain, ops yells.
+
+Your job: stop the chatbot from making things up. The fix is RAG.
+
+| Step | Tutorial | Real-life equivalent |
+|---|---|---|
+| Use a hosted service (one-line setup) | Tutorial 1 (managed RAG) | Hire a service that scans the binder and answers for you |
+| Build it yourself with embeddings | Tutorial 2 (self-managed) | Photocopy the binder, file the pages, look up by topic |
+| Combine keyword + meaning search and re-rank | Tutorial 3 (hybrid + reranker) | First the librarian narrows the shelf, then a senior agent picks the best page |
+| Make sure the model **only** uses the binder | Tutorial 4 (hallucination control) | "Don't quote rules that aren't in the binder" |
+
+By the end the chatbot answers "You have **14 days** to return your laptop" and shows the exact policy paragraph it used.
 
 ---
 
@@ -186,6 +250,10 @@ How the final answer is generated from retrieved evidence.
 
 ## Tutorial 1 — Managed RAG with OpenAI file search
 
+### Real-life analogy
+
+This is **"hire a serviced apartment, don't build the house"**. You upload your binder of PDFs to OpenAI; they handle the chunking, embedding, indexing, search, and answer generation. You write maybe 10 lines of code and have a working system. Tradeoff: less control, ongoing per-query cost, your docs live on their servers.
+
 ### Business problem
 OrbitMart wants an assistant that answers questions about:
 - return policy
@@ -334,6 +402,10 @@ response = client.responses.create(
 
 ## Tutorial 2 — Self-managed semantic retrieval
 
+### Real-life analogy
+
+This is **"build your own kitchen"**. You handle every step: chop docs into chunks (paragraphs), turn each chunk into an embedding (a list of numbers representing meaning), store them in a vector database, and search by similarity. More work, but full control: your data stays on your machine, no per-query cost, you can swap any piece (embedder, store, retriever).
+
 ### Why you may still want self-managed RAG
 You may want:
 - custom ranking logic
@@ -405,6 +477,12 @@ results = vector_db.search(
 
 ## Tutorial 3 — Hybrid retrieval and reranking
 
+### Real-life analogy
+
+Hybrid search = **"two librarians at the front desk"**. One librarian only matches **exact words** (BM25 / keyword search) — great when you ask about "SKU-8842-A". The other only matches **meaning** (vector / semantic search) — great when you ask "how do I send back my laptop?". You combine both lists and get the best of both.
+
+Reranker = **"ask a senior agent to pick the best 3 pages from the top 50"**. Initial search is fast but imprecise; the reranker is slow but accurate, so you only run it on a small shortlist.
+
 Pure semantic retrieval is not always enough.
 
 ### Example failure
@@ -456,6 +534,12 @@ It makes the model’s job clearer:
 ---
 
 ## Tutorial 4 — Hallucination control patterns
+
+### Real-life analogy
+
+This is **"closed-book exam rules"**. You tell the model: *"Only quote facts from the pages I gave you. If the answer isn't in those pages, say 'I don't know'."* Combined with required citations ("point to the page you used"), the model can no longer make up policies.
+
+The difference between a fun demo and a system you can put in front of customers is exactly this: clear rules + required citations + a refusal path when the answer isn't in the documents.
 
 ### Pattern 1 — “answer only from evidence”
 Good default.

@@ -269,7 +269,7 @@ def evaluate(model, loader, criterion, device):
         preds.extend(logits.argmax(dim=-1).cpu().tolist())
         gold.extend(labels.cpu().tolist())
 
-    macro_f1 = f1_score(gold, preds, average="macro")
+    macro_f1 = f1_score(gold, preds, average="macro", zero_division=0)
     return total_loss / len(loader), macro_f1
 ```
 
